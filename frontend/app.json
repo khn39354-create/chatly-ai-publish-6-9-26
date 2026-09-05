@@ -24,7 +24,7 @@
       },
       "edgeToEdgeEnabled": true,
       "softwareKeyboardLayoutMode": "resize",
-      "package": "emergent.aimescom.senger.bq2ltq",
+      "package": "com.chatly.ai.messenger.app",
       "permissions": [
         "CAMERA",
         "RECORD_AUDIO",
