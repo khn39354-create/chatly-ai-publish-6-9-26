@@ -874,3 +874,11 @@ historical_log:
       • Combined with previous Phase 5 tests: QR (4/4), Public Profile (3/3), Status (7/7), Chat Theme (4/4), Delete Chat (4/4)
       
       PHASE 5 BACKEND COMPLETE: 37/37 tests passed across all 6 feature areas. All previously skipped tests now verified and working.
+
+  - agent: "main"
+    message: |
+      BUILD FIX (Android/EAS APK): Build failed with "No lockfile found in the project directory" because
+      /app/frontend had no yarn.lock (only a stale npm package-lock.json; package.json declares packageManager yarn@1.22.22).
+      Fix: generated frontend/yarn.lock via `yarn install`; moved stale package-lock.json to /tmp/package-lock.json.bak.
+      Also set android.package = com.chatly.ai.messenger.app (user request). Verified by testing agent: yarn.lock present,
+      --frozen-lockfile in sync, not gitignored, expo config valid, app + backend + login still working (7/7 PASS).
