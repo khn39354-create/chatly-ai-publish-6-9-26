@@ -22,8 +22,17 @@ async def transcribe_audio(audio_bytes: bytes, filename: str, language: str = "e
             tmp.write(audio_bytes)
             tmp_name = tmp.name
         stt = OpenAISpeechToText(api_key=EMERGENT_LLM_KEY)
-        result = await stt.transcribe(tmp_name, model="whisper-1", language=language if language in ("en", "hi") else "en")
-        return result if isinstance(result, str) else getattr(result, "text", str(result))
+        kwargs: dict = {"model": "whisper-1"}
+        # "auto" (or unknown) -> let Whisper detect the language (English/Hindi/Hinglish etc.)
+        if language in ("en", "hi"):
+            kwargs["language"] = language
+        # The underlying OpenAI client needs a real file object (a bare path string is rejected).
+        with open(tmp_name, "rb") as fh:
+            result = await stt.transcribe(fh, **kwargs)
+        text = result if isinstance(result, str) else getattr(result, "text", None)
+        if text is None and isinstance(result, dict):
+            text = result.get("text", "")
+        return (text or "").strip()
     finally:
         if tmp_name:
             Path(tmp_name).unlink(missing_ok=True)

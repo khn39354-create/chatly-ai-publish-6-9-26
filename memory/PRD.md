@@ -50,7 +50,7 @@ Build "Chatly AI Messenger" — an AI-native real-time messaging + personal AI +
 - AI Call Intelligence: /api/calls/{id}/transcript (Whisper audio) + /transcript-text; /api/calls/{id}/ai actions summary(structured)/tasks/ask(with source); GET+DELETE transcript; /api/calls/search. Call Intelligence screen: record notes->transcribe, summary, detected action items -> create task/reminder/calendar (confirm only).
 - Calendar events collection: POST/GET /api/calendar. Call->calendar/reminder/task all require user confirmation.
 - Privacy: added call_intelligence/call_transcription/call_summary/call_memory toggles (gating enforced server-side; 403 when off). UI toggles added.
-- LIMITATION: real WebRTC audio/video MEDIA requires a native device build (react-native-webrtc unavailable in Expo Go/web). Signaling + sessions + history + AI are fully real and tested; media layer activates on device builds.
+- (superseded) Media layer now implemented — see Phase 6 below.
 
 ## Testing (iteration 3)
 - Backend 28/28 Phase 3 + regression pass. Frontend call surfaces verified. Report: /app/test_reports/iteration_3.json.
@@ -70,3 +70,11 @@ Build "Chatly AI Messenger" — an AI-native real-time messaging + personal AI +
 ## Notes
 - Email OTP delivers only to real addresses (provider blocks fake domains). Real users' emails work.
 - Sarvam is a reasoning model; ai_service pads token budget and retries once on empty output.
+
+## Implemented — Phase 6 (2026-09): Real call media + live transcription
+- WebRTC 1:1 audio/video: web preview uses browser RTCPeerConnection; Android/iOS builds use react-native-webrtc (124.x) via @config-plugins/react-native-webrtc@13 (SDK 54). Expo Go shows a clear "needs installed app" banner (WebRTC is native code).
+- Signaling reuses WS relay (call_offer/call_answer/call_ice). Caller offers after call_accepted; callee answers; ICE candidates queued until remote SDP set. ICE config from GET /api/calls/ice-servers (Google STUN + OpenRelay TURN default; env STUN_URLS/TURN_URLS/TURN_USERNAME/TURN_CREDENTIAL for production).
+- Call UI (src/calls.tsx): remote video full-screen, local mirrored PiP, real Mute/Camera/Flip/Speaker (expo-audio earpiece routing on native), connection state, Expo Go/permission/failed banners, live captions overlay + CC toggle.
+- Live transcription: each participant records own mic in 8s chunks (web MediaRecorder + VAD; native expo-audio recorder loop) -> POST /api/calls/{id}/transcript-chunk -> Whisper (auto language EN/HI/Hinglish) -> speaker-labelled segments merged into call.transcript -> WS call_transcript to both sides. Privacy toggles enforced server-side (403). Call Intelligence works on the live transcript right after hang-up.
+- Fixed pre-existing media_service.transcribe_audio bug (path string passed to Whisper client) which had broken all voice transcription.
+- Group calls remain signaling-only (banner shown); planned for a later phase.

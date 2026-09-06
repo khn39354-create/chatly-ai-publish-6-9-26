@@ -12,9 +12,9 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.emergent.aimessenger.bq2ltq",
       "infoPlist": {
-        "NSCameraUsageDescription": "Take and send photos in your chats",
+        "NSCameraUsageDescription": "Show your video on calls and send photos in chats",
         "NSPhotoLibraryUsageDescription": "Share photos from your library in chats",
-        "NSMicrophoneUsageDescription": "Record voice messages in your chats"
+        "NSMicrophoneUsageDescription": "Talk on voice and video calls and record voice messages"
       }
     },
     "android": {
@@ -28,7 +28,13 @@
       "permissions": [
         "CAMERA",
         "RECORD_AUDIO",
-        "READ_MEDIA_IMAGES"
+        "READ_MEDIA_IMAGES",
+        "MODIFY_AUDIO_SETTINGS",
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "BLUETOOTH",
+        "BLUETOOTH_CONNECT",
+        "WAKE_LOCK"
       ]
     },
     "web": {
@@ -62,7 +68,14 @@
           "cameraPermission": "Scan Chatly QR codes to add friends"
         }
       ],
-      "expo-video"
+      "expo-video",
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "cameraPermission": "Show your video on calls and send photos in chats",
+          "microphonePermission": "Talk on voice and video calls and record voice messages"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

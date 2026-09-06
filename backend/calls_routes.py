@@ -1,3 +1,4 @@
+import os
 import uuid
 import logging
 from datetime import datetime, timezone
@@ -133,6 +134,25 @@ async def call_history(user: dict = Depends(get_current_user)):
     return {"calls": out}
 
 
+# ---- WebRTC media config (STUN/TURN) --------------------------------------
+# Defaults use Google STUN + the free public Open Relay TURN (metered.ca) so
+# calls connect across mobile NATs out of the box. For production set
+# TURN_URLS (comma separated), TURN_USERNAME and TURN_CREDENTIAL in backend/.env.
+@router.get("/calls/ice-servers")
+async def ice_servers(user: dict = Depends(get_current_user)):
+    stun = [u.strip() for u in os.environ.get("STUN_URLS", "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302").split(",") if u.strip()]
+    turn_urls = [u.strip() for u in os.environ.get(
+        "TURN_URLS",
+        "turn:openrelay.metered.ca:80,turn:openrelay.metered.ca:443,turn:openrelay.metered.ca:443?transport=tcp,turns:openrelay.metered.ca:443?transport=tcp",
+    ).split(",") if u.strip()]
+    turn_user = os.environ.get("TURN_USERNAME", "openrelayproject")
+    turn_cred = os.environ.get("TURN_CREDENTIAL", "openrelayproject")
+    servers: list[dict] = [{"urls": stun}] if stun else []
+    if turn_urls and turn_user and turn_cred:
+        servers.append({"urls": turn_urls, "username": turn_user, "credential": turn_cred})
+    return {"iceServers": servers}
+
+
 @router.get("/calls/{call_id}")
 async def get_call(call_id: str, user: dict = Depends(get_current_user)):
     call = await _call_for(call_id, user["user_id"])
@@ -170,6 +190,85 @@ class TranscriptTextBody(BaseModel):
     text: str
 
 
+# Whisper tends to hallucinate short stock phrases on silence/noise; drop them.
+_HALLUCINATIONS = {
+    "thank you.", "thank you", "thanks for watching.", "thanks for watching", "you", "you.", "bye.", "bye",
+    "thank you for watching.", "subscribe.", "please subscribe.", ".", "..", "...", "hmm.", "hmm", "uh", "um",
+    "धन्यवाद।", "धन्यवाद", "शुक्रिया।", "शुक्रिया",
+}
+
+
+def _clean_segment(text: str) -> str:
+    t = (text or "").strip()
+    if not t or t.lower() in _HALLUCINATIONS:
+        return ""
+    if len(t) < 2:
+        return ""
+    return t
+
+
+def _merge_transcript(segments: list[dict]) -> str:
+    """Build a readable, speaker-labelled transcript ordered by capture time,
+    collapsing consecutive lines from the same speaker."""
+    lines: list[str] = []
+    last_speaker = None
+    for seg in sorted(segments, key=lambda s: (s.get("at") or "", s.get("seq") or 0)):
+        text = seg.get("text", "").strip()
+        if not text:
+            continue
+        speaker = seg.get("speaker") or "Speaker"
+        if speaker == last_speaker and lines:
+            lines[-1] = lines[-1] + " " + text
+        else:
+            lines.append(f"{speaker}: {text}")
+            last_speaker = speaker
+    return "\n".join(lines)
+
+
+@router.post("/calls/{call_id}/transcript-chunk")
+async def upload_call_chunk(call_id: str, file: UploadFile = File(...), seq: int = Form(0),
+                            at: str = Form(""), language: str = Form("auto"),
+                            user: dict = Depends(get_current_user)):
+    """Live call transcription: each participant streams its own microphone in short
+    chunks (~8s). The server transcribes every chunk, labels it with the speaker's name,
+    merges everything into the call transcript and pushes the new segment to all
+    participants over WebSocket so both sides see live captions."""
+    call = await _call_for(call_id, user["user_id"])
+    p = await _call_ai_allowed(user["user_id"])
+    if p.get("call_transcription", True) is False:
+        raise HTTPException(status_code=403, detail="Call Transcription is turned off in your privacy settings.")
+    if call["status"] in ("rejected", "missed"):
+        raise HTTPException(status_code=409, detail="Call is not active.")
+    data = await file.read()
+    if not data:
+        return {"segment": None, "skipped": "empty"}
+    if len(data) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Chunk too large.")
+    if len(data) < 1500:  # header-only / near-empty container
+        return {"segment": None, "skipped": "too_small"}
+    try:
+        text = await transcribe_audio(data, file.filename or "chunk.webm", language or "auto")
+    except Exception as e:
+        logger.error(f"Call chunk transcription failed: {e}")
+        raise HTTPException(status_code=502, detail="Transcription failed for this chunk.")
+    text = _clean_segment(text)
+    if not text:
+        return {"segment": None, "skipped": "silence"}
+    segment = {"id": uuid.uuid4().hex[:10], "speaker_id": user["user_id"], "speaker": user["name"],
+               "text": text, "seq": seq, "at": at or _now()}
+    segments = list(call.get("segments", [])) + [segment]
+    transcript = _merge_transcript(segments)
+    await db.calls.update_one({"call_id": call_id}, {
+        "$push": {"segments": segment},
+        "$set": {"transcript": transcript, "transcript_at": _now(), "transcribed_by": user["user_id"],
+                 "transcript_mode": "live"},
+    })
+    payload = {"type": "call_transcript", "call_id": call_id, "segment": segment}
+    for pid in call["participants"]:
+        await manager.send_to_user(pid, payload)
+    return {"segment": segment}
+
+
 @router.post("/calls/{call_id}/transcript-text")
 async def set_transcript_text(call_id: str, body: TranscriptTextBody, user: dict = Depends(get_current_user)):
     await _call_for(call_id, user["user_id"])
@@ -182,14 +281,15 @@ async def set_transcript_text(call_id: str, body: TranscriptTextBody, user: dict
 @router.get("/calls/{call_id}/transcript")
 async def get_transcript(call_id: str, user: dict = Depends(get_current_user)):
     call = await _call_for(call_id, user["user_id"])
-    return {"transcript": call.get("transcript", ""), "transcript_at": call.get("transcript_at")}
+    return {"transcript": call.get("transcript", ""), "transcript_at": call.get("transcript_at"),
+            "segments": call.get("segments", []), "transcript_mode": call.get("transcript_mode")}
 
 
 @router.delete("/calls/{call_id}/transcript")
 async def delete_transcript(call_id: str, user: dict = Depends(get_current_user)):
     await _call_for(call_id, user["user_id"])
     await db.calls.update_one({"call_id": call_id},
-                              {"$unset": {"transcript": "", "transcript_at": "", "summary": "", "insights": ""}})
+                              {"$unset": {"transcript": "", "transcript_at": "", "summary": "", "insights": "", "segments": "", "transcript_mode": ""}})
     return {"status": "deleted"}
 
 
